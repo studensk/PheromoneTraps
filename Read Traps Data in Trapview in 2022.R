@@ -18,8 +18,8 @@ drive_auth(email="sbudworm@gmail.com")
 ## Read trap names and coordinates
 ## We need to do that because the API has only access to the trap number and
 ## a trap can change location from year to year 
-drive_download("Trap names and coordinates 2022",path="tmp2.xlsx",overwrite=TRUE)
-Traps <- readxl::read_excel("tmp2.xlsx")
+drive_download("Trap names and coordinates 2022",path="tmp/tmp2.xlsx",overwrite=TRUE)
+Traps <- readxl::read_excel("tmp/tmp2.xlsx")
 
 # Source the functions to access the API
 source(paste0(Working.path,"/Trapview API.R"))
@@ -339,7 +339,7 @@ writeDataTable(wb, "Daily Captures", x = Daily.Captures,tableStyle = "TableStyle
 Format.sheet(Daily.Captures,"Daily Captures")
 
 # Save the Excel file locally
-saveWorkbook(wb, "Trap Monitoring 2022.xlsx", overwrite = TRUE)
+saveWorkbook(wb, "tmp/Trap Monitoring 2022.xlsx", overwrite = TRUE)
 
 # Copy the Excel file to Google Drive 
 #drive_upload(media="Trap Monitoring 2022.xlsx",
@@ -348,9 +348,7 @@ saveWorkbook(wb, "Trap Monitoring 2022.xlsx", overwrite = TRUE)
 #             overwrite = TRUE)
 
 drive_auth(email="jean.noel.candau@gmail.com")
-drive_upload(media="Trap Monitoring 2022.xlsx",
+drive_upload(media="tmp/Trap Monitoring 2022.xlsx",
              path = "SBWTeam/PheromoneTraps/Data/Raw/",
              name = "Trap Monitoring 2022",
              overwrite = TRUE)
-
-file.remove("~/")

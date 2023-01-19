@@ -31,8 +31,8 @@ drive_auth(email="sbudworm@gmail.com")
 
 
 ## Read trap names and coordinates
-drive_download("Trap Monitoring 2021 - Manual read",path="tmp2.xlsx",overwrite=TRUE)
-Traps <- readxl::read_excel("tmp2.xlsx",)
+drive_download("Trap Monitoring 2021 - Manual read",path="tmp/tmp2.xlsx",overwrite=TRUE)
+Traps <- readxl::read_excel("tmp/tmp2.xlsx",)
 Traps$Code <- sub("S","S0",Traps$Code)
 Traps <- Traps[,c("Name","Code","Latitude","Longitude")] %>% filter(stringr::str_detect(Code,"S0"))
 
@@ -373,7 +373,7 @@ writeDataTable(wb, "Daily Captures", x = Daily.Captures,tableStyle = "TableStyle
 Format.sheet(Daily.Captures,"Daily Captures")
 
 # Save the Excel file locally
-saveWorkbook(wb, "Trap Monitoring 2021.xlsx", overwrite = TRUE)
+saveWorkbook(wb, "tmp/Trap Monitoring 2021.xlsx", overwrite = TRUE)
 
 # Copy the Excel file to Google Drive 
 #drive_upload(media="Trap Monitoring 2021.xlsx",
@@ -383,7 +383,7 @@ saveWorkbook(wb, "Trap Monitoring 2021.xlsx", overwrite = TRUE)
 
 ## Google sheet access
 drive_auth(email="jean.noel.candau@gmail.com")
-drive_upload(media="Trap Monitoring 2021.xlsx",
+drive_upload(media="tmp/Trap Monitoring 2021.xlsx",
              path = "SBWTeam/PheromoneTraps/Data/Raw/",
              name = "Trap Monitoring 2021",
              overwrite = TRUE)
