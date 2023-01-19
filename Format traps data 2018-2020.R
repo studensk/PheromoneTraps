@@ -61,10 +61,10 @@ Process.R <- function(ss,Year) {
   Format.sheet(Daily.Captures,"Daily Captures")
   
   # Save the Excel file locally
-  saveWorkbook(wb, paste0("Trap Monitoring ",Year,".xlsx"), overwrite = TRUE)
+  saveWorkbook(wb, paste0("tmp/Trap Monitoring ",Year,".xlsx"), overwrite = TRUE)
   
   drive_auth(email="jean.noel.candau@gmail.com")
-  drive_upload(media=paste0("Trap Monitoring ",Year,".xlsx"),
+  drive_upload(media=paste0("tmp/Trap Monitoring ",Year,".xlsx"),
                path = "SBWTeam/PheromoneTraps/Data/Raw/",
                name = paste0("Trap Monitoring ",Year),
                overwrite = TRUE)
