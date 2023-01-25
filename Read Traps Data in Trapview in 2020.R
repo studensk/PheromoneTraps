@@ -12,6 +12,18 @@ library(sf)
 library(fuzzyjoin)
 library(tidyverse)
 
+################################################################################
+## NOTES for 2020
+##
+## 1- I made the mistake of copying the 2019 list of locations and codes as a 
+##    template when I started the 2020 season but some traps were moved around
+##    and the locations and trap codes did not correspond anymore in 2020 for
+##    traps in Port Saunders, St Anthony. It was corrected on the Google sheet
+##    on Jan. 21, 2022. The others were all checked and good.
+## 2- 
+################################################################################
+
+
 # Utilitary function to calculate the number of non-null values in a column
 # Have to remove last value that corresponds to the column sum
 gt0 <- function(data) {
@@ -74,6 +86,12 @@ D.2020 <- D.2020 %>%
   rename(Location=Name) %>%
   select(id,Code,Location,Prov,Longitude,Latitude)
 
+# Fix a couple of Prov names
+D.2020 <- D.2020 %>% mutate(Prov = replace(Prov,Code == "S04255" , "QC")) %>%
+  mutate(Prov = replace(Prov,Code == "S04607" , "NL")) %>%
+  mutate(Prov = replace(Prov,Code == "S04620" , "NL"))
+
+
 ################################################################################
 #### Analysis 1: Calculate number of budworm caught every flight night
 ####             A flight night (FN) is the combination of afternoon and evening
@@ -106,35 +124,34 @@ for (i in 1:ntrap) {
   # Read Events
 }
 
-# Correct wrong deviceName
-All.Events[All.Events$deviceName == "Clearwater 2022","deviceName"] <- "S04285"
-All.Events[All.Events$deviceName == "Arisaig 2022","deviceName"] <- "S06207"
-
-# Correct St Modeste
-All.Events <- mutate(All.Events,eventStatus = replace(eventStatus, deviceName == "S04272" & timestamp == "2021-06-25T12:45:01", 1)) 
-All.Events <- mutate(All.Events,statusMessage = replace(statusMessage, deviceName == "S04272" & timestamp == "2021-06-25T12:45:01", "OK")) 
-All.Events <- mutate(All.Events,eventStatus = replace(eventStatus, deviceName == "S04272" & timestamp == "2021-06-25T18:46:01", 1)) 
-All.Events <- mutate(All.Events,statusMessage = replace(statusMessage, deviceName == "S04272" & timestamp == "2021-06-25T18:46:01", "OK")) 
-
-# Correct Duniere
-All.Events <- mutate(All.Events,statusMessage = replace(statusMessage, deviceName == "S04279" & timestamp == "2021-07-12T12:35:01", "OK")) 
-All.Events <- mutate(All.Events,eventStatus = replace(eventStatus, deviceName == "S04279" & timestamp == "2021-07-12T12:35:01", 1)) 
-
-# Correct Gaspe
-All.Events <- mutate(All.Events,statusMessage = replace(statusMessage, deviceName == "S04282" & timestamp == "2021-07-12T12:25:01", "OK")) 
-All.Events <- mutate(All.Events,eventStatus = replace(eventStatus, deviceName == "S04282" & timestamp == "2021-07-12T12:25:01", 1)) 
-
-# Correct Pikauba
-All.Events <- mutate(All.Events,noPests = replace(noPests, deviceName == "S04262" & timestamp == "2021-08-14T12:49:00", 5)) 
-All.Events <- mutate(All.Events,noPests = replace(noPests, deviceName == "S04262" & timestamp == "2021-08-14T18:50:00", 5)) 
-
-
 # Post-treatment of All.Events to add location name 
 All.Events <- All.Events %>%
   mutate(timestamp=ymd_hms(timestamp)) %>%
   select(idEvent,timestamp,deviceName,eventType,typeMessage,
          eventStatus,statusMessage,noPests) %>%
-  dplyr::left_join(.,D.2021,by=c("deviceName"="Code"))
+  dplyr::left_join(.,D.2020,by=c("deviceName"="Code"))
+
+# Remove Start and End of monitoring periods because they are not always recorded
+# and therefore not instructive
+All.Events <- filter(All.Events, eventType != "4" & eventType != "END")
+
+# Check if there are any missing values
+setdiff(All.Events,drop_na(All.Events))
+
+# Some early-season images were checked but not recorded. These records have to
+# be set to 0
+list1 <- c("St Modeste","Escourt","Duchenier","Arseneault","Duniere","Gaspe",
+           "Doaktown","Saint Quentin","Saint Leonard","Juniper",
+           "Plaster Rock","South Tetagouche","Robinsonville",
+           "Jacquet River")
+All.Events <- mutate(All.Events,noPests = replace(noPests, Location %in% list1 & (as.Date(timestamp) < ymd("2020-06-15") | as.Date(timestamp) > ymd("2020-08-15")) ,0)) 
+list2 <- c("Arisaig")
+All.Events <- mutate(All.Events,noPests = replace(noPests, Location %in% list2 & (as.Date(timestamp) < ymd("2020-06-16") | as.Date(timestamp) > ymd("2020-08-15")) ,0)) 
+list3 <- c("Pikauba","Forestville","Havre St Pierre","Baie Comeau","Sept-Iles",
+           "Petit Etang","Inverness","Baldwin","Miramichi")
+All.Events <- mutate(All.Events,noPests = replace(noPests, Location %in% list3 & (as.Date(timestamp) < ymd("2020-06-24") | as.Date(timestamp) > ymd("2020-08-15")) ,0))
+list4 <- c("St Anthony","Pointe au mal","Port Saunders","Cheesemans Park")
+All.Events <- mutate(All.Events,noPests = replace(noPests, Location %in% list4 & (as.Date(timestamp) < ymd("2020-07-01") | as.Date(timestamp) > ymd("2020-08-24")) ,0))
 
 
 #### Cleanup the events when there was a problem with paper tweak or image sent
@@ -148,24 +165,6 @@ Problems <- All.Events %>%
 All.Events <- All.Events %>%
   filter(!(eventType == 1 & eventStatus != 1))
 
-### Cleanup the cases where saturation occurred
-# 1- List of saturation dates
-saturations <- data.frame(Name="Zinc Mine Rd",Code="S04610",Start=ymd_hms("2021-07-31 01:00:00"),End=ymd_hms("2021-08-02 01:00:00"))
-# 2- Tag the records with saturated images as noPests is NA
-for (i in 1:dim(All.Events)[1]) {
-  if (All.Events[i,"eventType"] == 1 & All.Events[i,"eventStatus"] == 1 & All.Events[i,"deviceName"] %in% saturations$Code) {
-    for (j in 1:dim(saturations)[1]) {
-      if (All.Events[i,"deviceName"] == saturations[j,"Code"] & 
-          ymd_hms(All.Events[i,"timestamp"]) > saturations[j,"Start"] & 
-          ymd_hms(All.Events[i,"timestamp"]) < saturations[j,"End"]) {
-        All.Events[i,"noPests"] <- NA
-      }
-    }
-  }
-}
-# 3- Filter out the saturated images
-All.Events <- filter(All.Events,!(eventType == 1 & is.na(noPests)))
-
 # Histograms of picture times to help setup the cut times in between pictures
 tmp <- All.Events %>%
   dplyr::mutate(Hour=as.integer(format(ymd_hms(All.Events$timestamp),"%H"))) %>%
@@ -176,13 +175,14 @@ ggplot(data=tmp,aes(x=Hour)) +
   scale_x_continuous(breaks = seq(0, 24, by = 1))
 # In 2022 we have breaks at 3,10,16,and 21
 # In 2021 we have breaks at 1:30,9:30,16,and 21:30
+# In 2020 we have breaks at 1:30,9:30,13:30,and 21:30
 
 # Create master list of start times and end times
 # #### REMEMBER: We code a FlightDay from noon one day to noon the next day
-Date1 <- seq(from=ymd_hms("2021-06-15 01:30:00"), to=ymd_hms("2021-08-24 01:30:00"), by ="day")
-Date2 <- seq(from=ymd_hms("2021-06-15 09:30:00"), to=ymd_hms("2021-08-24 09:30:00"), by ="day")
-Date3 <- seq(from=ymd_hms("2021-06-15 16:00:00"), to=ymd_hms("2021-08-24 16:00:00"), by ="day")
-Date4 <- seq(from=ymd_hms("2021-06-15 21:30:00"), to=ymd_hms("2021-08-24 21:30:00"), by ="day")
+Date1 <- seq(from=ymd_hms("2020-06-15 01:30:00"), to=ymd_hms("2020-08-24 01:30:00"), by ="day")
+Date2 <- seq(from=ymd_hms("2020-06-15 09:30:00"), to=ymd_hms("2020-08-24 09:30:00"), by ="day")
+Date3 <- seq(from=ymd_hms("2020-06-15 13:30:00"), to=ymd_hms("2020-08-24 13:30:00"), by ="day")
+Date4 <- seq(from=ymd_hms("2020-06-15 21:30:00"), to=ymd_hms("2020-08-24 21:30:00"), by ="day")
 tmp <- sort(c(Date1,Date2,Date3,Date4))
 Dates <- tibble(StartDates=tmp[1:length(tmp)-1]) %>%
   mutate(EndDates=tmp[-1]) %>%
@@ -274,11 +274,6 @@ TrapCatches <- All.Events %>%
   group_map(~ NewPests.f(.x),.keep = TRUE) %>%
   do.call("rbind",.)
 
-## Fix some problems by hand
-## Pointe Au Mal
-TrapCatches <- mutate(TrapCatches,NewPests = replace(NewPests, Location == "Pointe au mal" & dates < as.Date("2021-07-01"), 0)) 
-TrapCatches <- mutate(TrapCatches,noPests = replace(noPests, Location == "Pointe au mal" & dates < as.Date("2021-07-01"), 0)) 
-
 Format.sheet <- function(traps.data,traps.sheet) {
   lowStyle <- createStyle(bgFill = "yellow")
   mediumStyle <- createStyle(bgFill = "pink")
@@ -311,7 +306,7 @@ purrr::map(list("Morning","Night","Afternoon","Evening"), function(x) {
     dplyr::select(Location,FlightDay,NewPests) %>%
     arrange(FlightDay,.by_group = TRUE) %>%
     pivot_wider(names_from = FlightDay,values_from = NewPests,names_sort = TRUE) %>%
-    full_join(.,D.2021) %>%
+    full_join(.,D.2020) %>%
     ungroup() %>%
     dplyr::select(any_of(c("Location","Code","Longitude","Latitude",as.character(selectdates)))) %>%
     arrange(Location)
@@ -364,7 +359,7 @@ writeDataTable(wb, "Daily Captures", x = Daily.Captures,tableStyle = "TableStyle
 Format.sheet(Daily.Captures,"Daily Captures")
 
 # Save the Excel file locally
-saveWorkbook(wb, "Trap Monitoring 2021.xlsx", overwrite = TRUE)
+saveWorkbook(wb, "Trap Monitoring 2020.xlsx", overwrite = TRUE)
 
 # Copy the Excel file to Google Drive 
 #drive_upload(media="Trap Monitoring 2021.xlsx",
@@ -374,7 +369,7 @@ saveWorkbook(wb, "Trap Monitoring 2021.xlsx", overwrite = TRUE)
 
 ## Google sheet access
 drive_auth(email="jean.noel.candau@gmail.com")
-drive_upload(media="Trap Monitoring 2021.xlsx",
+drive_upload(media="Trap Monitoring 2020.xlsx",
              path = "SBWTeam/PheromoneTraps/Data/Raw/",
-             name = "Trap Monitoring 2021",
+             name = "Trap Monitoring 2020",
              overwrite = TRUE)
