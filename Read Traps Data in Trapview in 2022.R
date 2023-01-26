@@ -22,7 +22,7 @@ drive_download("Trap names and coordinates 2022",path="tmp/tmp2.xlsx",overwrite=
 Traps <- readxl::read_excel("tmp/tmp2.xlsx")
 
 # Source the functions to access the API
-source(paste0(Working.path,"/Trapview API.R"))
+source("Trapview API.R")
 
 # Define some parameters
 Year <- 2022
@@ -46,8 +46,14 @@ sumgt0 <- function(data) {
 D <- getDevices()
 
 # Select Eastern traps for 2022
+# Rename some locations to adhere to naming standard for the project
 D.2022 <- inner_join(D$device,Traps,by=c("partNo"="Code")) %>%
   dplyr::select(id,partNo,Location,Prov,Longitude,Latitude) %>%
+  mutate(Location = replace(Location, Location == "Pointe au Mal", "Point au Mal")) %>%
+  mutate(Location = replace(Location, Location == "Zinc Mine Road", "Zinc Mine Rd")) %>%
+  mutate(Location = replace(Location, Location == "Gaspé", "Gaspe")) %>%
+  mutate(Location = replace(Location, Location == "Dunière", "Duniere")) %>%
+  mutate(Location = replace(Location, Location == "Duchénier", "Duchenier")) %>%
   rename(Code=partNo)
 
 rm(D)
@@ -109,6 +115,9 @@ All.Events <- All.Events %>%
 # 3- If there is a problem with the image, eliminate the event
 All.Events <- All.Events %>%
   filter(!(eventType == 1 & eventStatus != 1))
+# 4- For some reason one paper tweak in Arisaig occurred several after
+# the command was sent so we are giving it a fake time
+All.Events <- mutate(All.Events,timestamp = replace(timestamp,deviceName == "S06207" & timestamp == ymd_hms("2022-06-30 20:00:01"),ymd_hms("2022-06-30 23:30:00")))
 
 ### Cleanup the cases where saturation occurred
 # 1- List of saturation dates
@@ -116,7 +125,7 @@ saturations <- data.frame(Name="Cheeseman",Code="S04540",Start=ymd_hms("2022-07-
 saturations[2,] <- list("Cheeseman","S04540",ymd_hms("2022-07-20 23:59:00"),ymd_hms("2022-07-21 14:00:00"))
 saturations[3,] <- list("Port Saunders","S04620",ymd_hms("2022-07-22 23:59:00"),ymd_hms("2022-07-26 20:00:00"))
 saturations[4,] <- list("Port Saunders","S04620",ymd_hms("2022-08-02 23:59:00"),ymd_hms("2022-08-03 20:00:00"))
-saturations[5,] <- list("Zinc Mine","S04610",ymd_hms("2022-07-22 23:59:00"),ymd_hms("2022-07-26 20:00:00"))
+saturations[5,] <- list("Zinc Mine Rd","S04610",ymd_hms("2022-07-22 23:59:00"),ymd_hms("2022-07-26 20:00:00"))
 saturations[6,] <- list("New Canada","S04716",ymd_hms("2022-07-15 23:59:00"),ymd_hms("2022-07-22 05:00:00"))
 # 2- Tag the records with saturated images as noPests is NA
 for (i in 1:dim(All.Events)[1]) {
@@ -350,5 +359,5 @@ saveWorkbook(wb, "tmp/Trap Monitoring 2022.xlsx", overwrite = TRUE)
 drive_auth(email="jean.noel.candau@gmail.com")
 drive_upload(media="tmp/Trap Monitoring 2022.xlsx",
              path = "SBWTeam/PheromoneTraps/Data/Raw/",
-             name = "Trap Monitoring 2022",
+             name = "Trap Results 2022",
              overwrite = TRUE)

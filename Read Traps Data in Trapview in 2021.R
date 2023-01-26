@@ -37,7 +37,7 @@ Traps$Code <- sub("S","S0",Traps$Code)
 Traps <- Traps[,c("Name","Code","Latitude","Longitude")] %>% filter(stringr::str_detect(Code,"S0"))
 
 # Source the functions to access the API
-source(paste0(Working.path,"Trapview API.R"))
+source("Trapview API.R")
 
 # Define some parameters
 Year <- 2021
@@ -68,6 +68,9 @@ D.2021 <- st_join(st_as_sf(D.2021,coords = c("Longitude",'Latitude'),crs=st_crs(
 D.2021[D.2021$Name == "Havre St Pierre","Prov"] <- "QC"
 D.2021[D.2021$Name == "Arisaig","Prov"] <- "NS"
 D.2021[D.2021$Name == "St Anthony","Prov"] <- "NL"
+
+# Change name for Pointe au mal to adhere to project standard
+D.2021[D.2021$Name == "Pointe au mal","Name"] <- "Point au Mal"
 
 # Remove Magdeleine Islands
 D.2021 <- D.2021 %>%
@@ -285,8 +288,8 @@ TrapCatches <- All.Events %>%
 
 ## Fix some problems by hand
 ## Pointe Au Mal
-TrapCatches <- mutate(TrapCatches,NewPests = replace(NewPests, Location == "Pointe au mal" & dates < as.Date("2021-07-01"), 0)) 
-TrapCatches <- mutate(TrapCatches,noPests = replace(noPests, Location == "Pointe au mal" & dates < as.Date("2021-07-01"), 0)) 
+TrapCatches <- mutate(TrapCatches,NewPests = replace(NewPests, Location == "Point au Mal" & dates < as.Date("2021-07-01"), 0)) 
+TrapCatches <- mutate(TrapCatches,noPests = replace(noPests, Location == "Point au Mal" & dates < as.Date("2021-07-01"), 0)) 
 
 Format.sheet <- function(traps.data,traps.sheet) {
   lowStyle <- createStyle(bgFill = "yellow")
@@ -385,5 +388,5 @@ saveWorkbook(wb, "tmp/Trap Monitoring 2021.xlsx", overwrite = TRUE)
 drive_auth(email="jean.noel.candau@gmail.com")
 drive_upload(media="tmp/Trap Monitoring 2021.xlsx",
              path = "SBWTeam/PheromoneTraps/Data/Raw/",
-             name = "Trap Monitoring 2021",
+             name = "Trap Results 2021",
              overwrite = TRUE)

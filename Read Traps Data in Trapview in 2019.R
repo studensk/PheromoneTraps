@@ -104,6 +104,10 @@ AllTraps <- do.call("rbind", lapply(D.2019$Location,function(x) {
   readxl::read_excel("./tmp/tmp.xls",skip = 4) %>% mutate(Location=x)
 }))
 
+# Rename "Pointe au mal" to adhere to project's naming standard
+AllTraps <- mutate(AllTraps,Location = replace(Location,Location == "Pointe au mal" , "Point au Mal"))
+D.2019 <- mutate(D.2019,Location = replace(Location,Location == "Pointe au mal" , "Point au Mal"))
+
 # Select records for newpests (eliminate records of paper tweaks not needed here) 
 AllTraps <- filter(AllTraps,`User reviewed` == "Yes")
 
@@ -153,13 +157,13 @@ NewPests.f <- function(df,Dates) {
 }
   
 TrapCatches.NoNL <- AllTraps %>%
-  filter(!(Location %in% c("Zinc Mine Rd","Cheesemans Park","St Anthony","Pointe au mal","Port Saunders"))) %>%
+  filter(!(Location %in% c("Zinc Mine Rd","Cheesemans Park","St Anthony","Point au Mal","Port Saunders"))) %>%
   group_by(Location) %>%
   group_map(~ NewPests.f(.x,Dates.noNL),.keep = TRUE) %>%
   do.call("rbind",.)
 
 TrapCatches.NL <- AllTraps %>%
-  filter(Location %in% c("Zinc Mine Rd","Cheesemans Park","St Anthony","Pointe au mal","Port Saunders")) %>%
+  filter(Location %in% c("Zinc Mine Rd","Cheesemans Park","St Anthony","Point au Mal","Port Saunders")) %>%
   group_by(Location) %>%
   group_map(~ NewPests.f(.x,Dates.NL),.keep = TRUE) %>%
   do.call("rbind",.)
@@ -265,5 +269,5 @@ saveWorkbook(wb, "Trap Monitoring 2019.xlsx", overwrite = TRUE)
 drive_auth(email="jean.noel.candau@gmail.com")
 drive_upload(media="Trap Monitoring 2019.xlsx",
              path = "SBWTeam/PheromoneTraps/Data/Raw/",
-             name = "Trap Monitoring 2019",
+             name = "Trap Results 2019",
              overwrite = TRUE)

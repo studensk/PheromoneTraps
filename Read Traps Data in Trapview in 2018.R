@@ -257,5 +257,5 @@ saveWorkbook(wb, "Trap Monitoring 2018.xlsx", overwrite = TRUE)
 drive_auth(email="jean.noel.candau@gmail.com")
 drive_upload(media="Trap Monitoring 2018.xlsx",
              path = "SBWTeam/PheromoneTraps/Data/Raw/",
-             name = "Trap Monitoring 2018",
+             name = "Trap Results 2018",
              overwrite = TRUE)

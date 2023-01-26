@@ -86,10 +86,11 @@ D.2020 <- D.2020 %>%
   rename(Location=Name) %>%
   select(id,Code,Location,Prov,Longitude,Latitude)
 
-# Fix a couple of Prov names
+# Fix a couple of Prov names and "Pointe au Mal"
 D.2020 <- D.2020 %>% mutate(Prov = replace(Prov,Code == "S04255" , "QC")) %>%
   mutate(Prov = replace(Prov,Code == "S04607" , "NL")) %>%
-  mutate(Prov = replace(Prov,Code == "S04620" , "NL"))
+  mutate(Prov = replace(Prov,Code == "S04620" , "NL")) %>%
+  mutate(Location=replace(Location,Location == "Pointe au mal","Point au Mal"))
 
 
 ################################################################################
@@ -150,7 +151,7 @@ All.Events <- mutate(All.Events,noPests = replace(noPests, Location %in% list2 &
 list3 <- c("Pikauba","Forestville","Havre St Pierre","Baie Comeau","Sept-Iles",
            "Petit Etang","Inverness","Baldwin","Miramichi")
 All.Events <- mutate(All.Events,noPests = replace(noPests, Location %in% list3 & (as.Date(timestamp) < ymd("2020-06-24") | as.Date(timestamp) > ymd("2020-08-15")) ,0))
-list4 <- c("St Anthony","Pointe au mal","Port Saunders","Cheesemans Park")
+list4 <- c("St Anthony","Point au Mal","Port Saunders","Cheesemans Park")
 All.Events <- mutate(All.Events,noPests = replace(noPests, Location %in% list4 & (as.Date(timestamp) < ymd("2020-07-01") | as.Date(timestamp) > ymd("2020-08-24")) ,0))
 
 
@@ -371,5 +372,5 @@ saveWorkbook(wb, "Trap Monitoring 2020.xlsx", overwrite = TRUE)
 drive_auth(email="jean.noel.candau@gmail.com")
 drive_upload(media="Trap Monitoring 2020.xlsx",
              path = "SBWTeam/PheromoneTraps/Data/Raw/",
-             name = "Trap Monitoring 2020",
+             name = "Trap Results 2020",
              overwrite = TRUE)
