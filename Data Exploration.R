@@ -10,7 +10,6 @@ library(googledrive)
 library(googlesheets4)
 library(openxlsx)
 library(sf)
-library(fuzzyjoin)
 library(tidyverse)
 
 source("Functions.R")
@@ -38,3 +37,12 @@ AllTraps %>% filter(Location %in% PermanentTraps$Location) %>%
         axis.title.y = element_text(color = "blue"),
         axis.title.y.right = element_text(color = "red")
       )
+
+# Distribution of flight season length
+AllTraps %>% group_by(Location,year(FlightDay)) %>%
+  filter(!is.na(MothCount) & MothCount > 0) %>%
+  summarise(StartDate=min(FlightDay),EndDate=max(FlightDay),Duration=(EndDate-StartDate)) %>%
+  ggplot(aes(x=Duration)) + 
+  geom_histogram(binwidth=4)
+
+
