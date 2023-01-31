@@ -22,7 +22,7 @@ GetAllTrapData <- function() {
                    type="xlsx",path="tmp/tmp.xlsx",overwrite=TRUE)
     do.call("rbind",lapply(c("Morning","Afternoon","Evening","Night"),function(x) {
       Traps <- readxl::read_xlsx("tmp/tmp.xlsx",sheet = x) %>%
-        select(Location,Code,Longitude,Latitude,starts_with(as.character(Year))) %>%
+        dplyr::select(Location,Code,Longitude,Latitude,starts_with(as.character(Year))) %>%
         filter(!is.na(Code)) %>%
         pivot_longer(cols=starts_with(as.character(Year)),names_to = "FlightDay",values_to = "MothCount") %>%
         mutate(TimeOfDay=x)
@@ -30,4 +30,13 @@ GetAllTrapData <- function() {
     }))
   }))
   All.Traps %>% mutate(FlightDay = ymd(FlightDay))
+}
+
+SumCountsPerDay <- function(x,na.remove=TRUE) {
+    x %>% 
+    group_by(Location,FlightDay) %>%
+    mutate(DayCount = sum(MothCount,na.rm = na.remove)) %>%
+    dplyr::select(Location,Code,Longitude,Latitude,FlightDay,DayCount) %>%
+    distinct() %>%
+    ungroup()
 }

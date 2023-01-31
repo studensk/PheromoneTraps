@@ -1,8 +1,7 @@
 ################################################################################
 ##
-## This code reads the capture data from the Trapview site 
-## does a few checks, saves the capture data in an Excel workbook
-## and uploads it to a Google sheet workbook
+## This code reads the full dataset from google drive and does some data 
+## exploration
 ##
 ################################################################################
 library(lubridate)
@@ -45,4 +44,10 @@ AllTraps %>% group_by(Location,year(FlightDay)) %>%
   ggplot(aes(x=Duration)) + 
   geom_histogram(binwidth=4)
 
+# Distribution of the number of days with counts > 0
+AllTraps %>% group_by(Location,year(FlightDay)) %>%
+  filter(!is.na(MothCount) & MothCount > 0) %>%
+  summarise(nDays=n()) %>%
+  ggplot(aes(x=nDays)) +
+  geom_histogram(binwidth=10)
 
