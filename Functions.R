@@ -16,7 +16,8 @@ library(tidyverse)
 # Download annual googlesheets from 2018-2022 and output all the data
 # in a single tibble
 GetAllTrapData <- function() {
-  drive_auth(email="jean.noel.candau@gmail.com")
+  em.add <- readline(prompt = 'Authorizing email address: ')
+  drive_auth(email=em.add)
   All.Traps <- do.call("rbind",lapply(2018:2022, function(Year) {
     drive_download(paste0("SBWTeam/PheromoneTraps/Data/Raw/Trap Results ",Year),
                    type="xlsx",path="tmp/tmp.xlsx",overwrite=TRUE)
