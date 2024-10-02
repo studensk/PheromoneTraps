@@ -8,20 +8,21 @@ y.origins <- y.origins[!duplicated(y.origins),]
 names(y.origins) <- c('lon_i', 'lat_i', 'Year')
 
 int.traj.orig <- read.csv('code/output/intersecting_trajectories.csv')
-int.traj.orig$Year <- sapply(int.traj.orig$date_i, function(x) {year(x)})
-int.traj <- merge(y.origins, int.traj.orig)
+int.traj <- int.traj.orig
+int.traj$Year <- sapply(int.traj$date_i, function(x) {year(x)})
 
 int.traj <- int.traj[order(int.traj$hour_along),]
 int.traj <- int.traj[order(int.traj$index),]
 int.traj <- int.traj[order(int.traj$Year),]
 int.traj$full.index <- paste0(int.traj$dateIndex, '_', int.traj$buffer)
 
-# write.csv(int.traj, 'data/intersecting_trajectories_yearly.csv',
-#           row.names = FALSE)
+write.csv(int.traj, 'data/intersecting_trajectories_yearly.csv',
+          row.names = FALSE)
 
-e.pt <- read_rds('code/output/event_points.rds')
-buf.ind.lst <- lapply(unique(e.pt$dateIndex), function(ind) {
-  sub <- subset(e.pt, dateIndex == ind)
+e.buf <- read_rds('code/output/event_points.rds')
+#e.buf <- read_rds('code/output/event_buffers.rds')
+buf.ind.lst <- lapply(unique(e.buf$dateIndex), function(ind) {
+  sub <- subset(e.buf, dateIndex == ind)
   new.ind <- paste0(ind, '_', 1:nrow(sub))
   sub$full.index <- new.ind
   return(sub)
@@ -36,7 +37,7 @@ i.cols <- c(it.cols[grep('_i', it.cols)], 'index')
 summary.lst <- list()
 for (i in sort(unique(index.key$index))) {
   it.sub <- subset(int.traj, dateIndex == i)
-  ep.sub <- subset(e.pt, dateIndex == i)
+  ep.sub <- subset(e.buf, dateIndex == i)
   for (j in 1:nrow(ep.sub)) {
     print(paste0(i, '_', j))
     epj <- ep.sub[j,]
@@ -92,12 +93,12 @@ for (i in sort(unique(index.key$index))) {
     summary.lst <- append(summary.lst, list(all.info))
   }
 }
-summary.df.orig <- bind_rows(summary.lst)
+summary.df <- bind_rows(summary.lst)
 
-write.csv(summary.df.orig, 'code/output/intersection_summary.csv',
+write.csv(summary.df, 'code/output/intersection_summary.csv',
           row.names = FALSE)
 
-summary.df <- subset(summary.df.orig, dist < 50)
+#summary.df <- subset(summary.df.orig, dist < 50)
 
 summary.ag.do <- aggregate(data = summary.df, dist.orig ~ full.index,
                            function(x) {c(min(x), mean(x), max(x))})
@@ -110,7 +111,7 @@ summary.sub.nd <- summary.sub[!duplicated(summary.sub),]
 ss.mg <- merge(summary.sub.nd, do.df)
 
 imm.pts.orig <- merge(buf.ind.df, ss.mg, all.x = TRUE)
-imm.pts.orig$intersection <- sapply(imm.pts$n.traj,
+imm.pts.orig$intersection <- sapply(imm.pts.orig$n.traj,
                                function(x) {ifelse(is.na(x), FALSE, TRUE)})
 
 yo.points.sf <- st_as_sf(x = y.origins, coords = c('lon_i', 'lat_i'),

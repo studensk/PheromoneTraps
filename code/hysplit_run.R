@@ -2,18 +2,44 @@ library(tidyverse)
 library(splitr)
 library(parallel)
 library(lutz)
-
-source('code/hysplit_trajectory_new2.R')
-source('code/trajectory_read.R')
-source('code/util_file.R')
 ## 96 cores
 
-o.points <- read.csv('data/origins_yearly.csv')
-o.points <- o.points[!duplicated(o.points),]
-o.points$ll <- paste0(o.points$Longitude, '_', o.points$Latitude)
-
 imm.events <- read.csv('data/imm_events.csv')
-imm.dates <- as.Date(unique(imm.events$trapdate))
+o.points <- read.csv('data/origins_yearly.csv')
+
+source('code/util_file.R')
+source('code/trajectory_read.R')
+source('code/hysplit_trajectory_new2.R')
+
+tzs <- tz_lookup_coords(lat = imm.events$Latitude, lon = imm.events$Longitude, 
+                        method = 'accurate')
+imm.events$timezone <- tzs
+imm.events$start.hr <- sapply(imm.events$Period, function(p) {
+  ifelse(p == 'Afternoon', 12, 
+         ifelse(p == 'Evening', 18,
+                ifelse(p == 'Night', 24, 30)))
+})
+
+dt.lst <- lapply(1:nrow(imm.events), function(r) {
+  row <- imm.events[r,]
+  dt <- as.POSIXct(paste0(row$Date, ' 00:00'),
+                   format = '%Y-%m-%d %H:%M',
+                   tz = row$timezone)
+})
+
+dt.per <- sapply(1:length(dt.lst), function(i) {
+  dt <- dt.lst[[i]]
+  s.hr <- imm.events$start.hr[i]
+  new <- dt + hours(s.hr)
+  as.character(with_tz(new, 'GMT'))
+})
+
+dt.per.full <- as.POSIXct(dt.per, tz =)
+imm.events$trajdate <- as.Date(dt.per)
+imm.events$start.hr.gmt <- hour(dt.per.full)
+imm.events.orig <- imm.events
+
+imm.dates <- unique(as.Date(imm.events.orig$trajdate))
 
 s.imm.dates <- sort(imm.dates)
 
@@ -38,23 +64,7 @@ date.vl <- function(alldates, int = 0) {
   return(combine.lst.orig)
 }
 
-combine.lst.orig <- date.vl(s.imm.dates)
-
-### Here, need to add in s.imm.dates that were missing before "realdate" ###
-imm.events$realdate <- as.Date(mapply(function(trapdate, period) {
-  ifelse(period %in% c('Afternoon', 'Evening'), trapdate - 1, trapdate)
-}, as.Date(imm.events$trapdate), imm.events$Period))
-
-imm.dates.new <- as.Date(unique(imm.events$realdate)) 
-s.imm.dates.new <- sort(imm.dates.new)
-
-leftover <- s.imm.dates.new[!(s.imm.dates.new %in% s.imm.dates)]
-s.imm.dates.new2 <- c(s.imm.dates, leftover)
-
-c.lst <- date.vl(leftover, int = length(s.imm.dates))
-c.lst <- append(c.lst, list(162))
-c.lst[[18]] <- 161
-combine.lst <- append(combine.lst.orig, c.lst)
+combine.lst <- date.vl(s.imm.dates)
 ####
 
 cl.ind <- unlist(lapply(1:length(combine.lst), function(x) {
@@ -62,7 +72,8 @@ cl.ind <- unlist(lapply(1:length(combine.lst), function(x) {
   rep(x, length(cl))
 }))
 
-index.key <- data.frame('date' = s.imm.dates.new2, 'index' = cl.ind)
+index.key <- data.frame('date' = s.imm.dates, 'index' = cl.ind)
+index.key$Year <- year(index.key$date)
 # write.csv(index.key, 'data/index_key.csv', row.names = FALSE)
 
 ## if download.file times out, run:
@@ -73,38 +84,74 @@ o.points <- o.points[order(o.points$Latitude),]
 
 dirpath <- paste0(getwd(), '/meteorology')
 
-cl <- makeCluster(80)
-clusterEvalQ(cl, {
-  library(tidyverse)
-  library(splitr)
-})
-clusterExport(cl, c('o.points', 's.imm.dates.new2', 
-                    'dirpath', 'combine.lst'))
-traj.lst <- parLapply(cl, 1:nrow(o.points), function(x) {
-  for(i in 1:length(combine.lst)) {
-    inds <- combine.lst[[i]]
-    dates <- s.imm.dates.new2[inds]
-    yr <- unique(year(dates))
-    y.o.points <- subset(o.points, Year == yr)
-    e.path <- paste0(dirpath, '/ed', x)
-    dir.create(path = e.path)
-    traj <- hysplit_trajectory_new2(lat = o.points$Latitude[x],
-                               lon = o.points$Longitude[x],
-                               duration = 9,
-                               days = s.imm.dates.new2[inds] + 1,
-                               height = c(300, 600, 900),
-                               daily_hours = c(1, 3),
-                               met_type = 'nam12',
-                               extended_met = TRUE, 
-                               met_dir = dirpath,
-                               exec_dir = e.path,
-                               clean_up = TRUE,
-                               config = list(vbug = 2.5))
-    write.csv(traj, paste0('code/output/hysplit_output/traj', i, '_', x, '.csv'),
-              row.names = FALSE)
+max.ind <- 0
+for (yr in 2018:2022) {
+  print(yr)
+  y.o.points <- subset(o.points, Year == yr)
+  ind.df <- subset(index.key, Year == yr)
+  ind.vec <- unique(ind.df$index)
+  combine.lst.sub <- combine.lst[ind.vec]
   
-  }
-})
-stopCluster(cl)
+  cl <- makeCluster(80)
+  clusterEvalQ(cl, {
+    library(tidyverse)
+    library(splitr)
 
-
+    source('code/hysplit_trajectory_new2.R')
+    source('code/trajectory_read.R')
+    source('code/util_file.R')
+  })
+  clusterExport(cl, c('y.o.points', 's.imm.dates', 'yr', 
+                      'dirpath', 'combine.lst.sub', 'max.ind'))
+  traj.lst <- parLapply(cl, 1:nrow(y.o.points), function(x) {
+    for(i in 1:length(combine.lst.sub)) {
+      inds <- combine.lst.sub[[i]]
+      dates <- s.imm.dates[inds]
+      e.path <- paste0(dirpath, '/ed', x, '_', yr)
+      dir.create(path = e.path)
+      cfg <- list(KMSL = 0,
+                  tm_tpot = 1,
+                  tm_tamb = 1,
+                  tm_rain = 1,
+                  tm_mixd = 1,
+                  tm_relh = 1,
+                  tm_terr = 1,
+                  tm_dswf = 1,
+                  vbug=2.5)
+      traj1 <- hysplit_trajectory_new2(lat = y.o.points$Latitude[x],
+                                      lon = y.o.points$Longitude[x],
+                                      duration = 9,
+                                      days = s.imm.dates[inds],
+                                      height = c(300, 600, 900),
+                                      daily_hours = c(1, 3),
+                                      met_type = 'nams',
+                                      extended_met = TRUE, 
+                                      met_dir = dirpath,
+                                      exec_dir = e.path,
+                                      clean_up = TRUE,
+                                      config = cfg)
+      
+      traj2 <- hysplit_trajectory_new2(lat = y.o.points$Latitude[x],
+                                      lon = y.o.points$Longitude[x],
+                                      duration = 9,
+                                      days = s.imm.dates[inds] - 1,
+                                      height = c(300, 600, 900),
+                                      daily_hours = 23,
+                                      met_type = 'nams',
+                                      extended_met = TRUE, 
+                                      met_dir = dirpath,
+                                      exec_dir = e.path,
+                                      clean_up = TRUE,
+                                      config = cfg)
+      traj1$run <- traj1$run + max(traj2$run)
+      traj <- rbind(traj2, traj1)
+      
+      write.csv(traj, paste0('code/output/hysplit_output/traj',
+                             i + max.ind, '_', x, '.csv'),
+                row.names = FALSE)
+      
+    }
+  })
+  stopCluster(cl)
+  max.ind <- max(ind.vec)
+}

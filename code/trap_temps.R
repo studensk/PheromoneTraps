@@ -4,15 +4,25 @@ library(chillR)
 
 ##### Clean Data #####
 tempdata <- read.csv('data/TrapWeather_2018-2022.csv', sep = ';')
+tempdata$humi <- as.numeric(chartr(',', '.', tempdata$humi))
+tempdata$temp <- as.numeric(chartr(',', '.', tempdata$temp))
+
+newtrap.lst <- lapply(2023:2024, function(y) {
+  read.csv(paste0('data/TrapWeather_', y, '.csv'))
+}) 
+newtraps <- bind_rows(newtrap.lst)
+
+tempdata <- bind_rows(tempdata, newtraps)
+
 dates <- sapply(tempdata$DMeasure, function(x) {
   dtvec <- strsplit(x, 'T')[[1]]
   dt <- paste0(dtvec[1], ' ', dtvec[2], ' ', 'UTC')
   return(dt)
 })
 tempdata$Date <- as_datetime(dates)
-tempdata$humi <- as.numeric(chartr(',', '.', tempdata$humi))
-tempdata$temp <- as.numeric(chartr(',', '.', tempdata$temp))
-tempdata <- subset(tempdata, select = -DMeasure)[,c('Date', 'Code', 'humi', 'temp')]
+
+td.cols <- c('Date', 'Code', 'humi', 'temp')
+tempdata <- subset(tempdata, select = -DMeasure)[,td.cols]
 
 tempdata$Date <- as.POSIXct(tempdata$Date)
 tempdata$Year <- year(tempdata$Date)
@@ -34,14 +44,9 @@ td.lst <- lapply(unique(tempdata$Index), function(ind) {
   full.date.lst <- lapply(as.character(all$Date), function(x) {
     datetime.vec <- strsplit(x, split = ' ')[[1]]
     splits <- c('-', ':')
-    att.vec <- list()
-    for (i in 1:2) {
-      s <- splits[i]
-      dt <- datetime.vec[i]
-      att.vec <- c(att.vec, as.list(as.numeric(strsplit(dt, split = s)[[1]])))
-    }
-    names(att.vec) <- c('Year', 'Month', 'Day', 'Hour', 'Min', 'Sec')
-    return(as.data.frame(att.vec[1:4]))
+    att.vec <- list('Year' = year(x), 'Month' = month(x), 
+                    'Day' = day(x), 'Hour' = hour(x))
+    return(as.data.frame(att.vec))
   })
   full.date.df <- bind_rows(full.date.lst)
   full.date.df$Temp <- all$temp

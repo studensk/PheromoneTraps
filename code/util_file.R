@@ -1,23 +1,23 @@
-x <- 1
-
-lat = o.points$Latitude[x]
-lon = o.points$Longitude[x]
-duration = 9
-direction = "forward"
-days = s.imm.dates.new2[inds] + 1
-height = c(300, 600, 900)
-daily_hours = c(1, 3)
-met_type = 'nam12'
-extended_met = TRUE
-met_dir = dirpath
-exec_dir = e.path
-clean_up = TRUE
-vert_motion = 0
-model_height = 20000
-config = NULL
-ascdata = NULL
-traj_name = NULL
-binary_path = NULL
+# x <- 1
+# 
+# lat = o.points$Latitude[x]
+# lon = o.points$Longitude[x]
+# duration = 9
+# direction = "forward"
+# days = s.imm.dates.new2[inds] + 1
+# height = c(300, 600, 900)
+# daily_hours = c(1, 3)
+# met_type = 'nam12'
+# extended_met = TRUE
+# met_dir = dirpath
+# exec_dir = e.path
+# clean_up = TRUE
+# vert_motion = 0
+# model_height = 20000
+# config = NULL
+# ascdata = NULL
+# traj_name = NULL
+# binary_path = NULL
 
 met_download <- function(urls,
                          local_path) {
@@ -658,6 +658,24 @@ get_met_nam12 <- function(days,
     )
 }
 
+get_met_nams <- function(days,
+                          duration,
+                          direction,
+                          path_met_files) {
+  
+  get_daily_filenames(
+    days = days,
+    duration = duration,
+    direction = direction,
+    suffix = "_hysplit.t00z.namsa"
+  ) %>%
+    get_met_files(
+      path_met_files = path_met_files,
+      ftp_dir = "ftp://arlftp.arlhq.noaa.gov/archives/nams"
+    )
+}
+
+
 download_met_files <- function(met_type,
                                days,
                                duration,
@@ -712,6 +730,17 @@ download_met_files <- function(met_type,
     
     met_files <-
       get_met_nam12(
+        days = days,
+        duration = duration,
+        direction = direction,
+        path_met_files = met_dir
+      )
+  }
+  
+  if (met_type == "nams") {
+    
+    met_files <-
+      get_met_nams(
         days = days,
         duration = duration,
         direction = direction,

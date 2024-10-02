@@ -1,0 +1,689 @@
+---
+title: "Pheromone Trap Manuscript"
+author: "Kala Studens"
+date: "2023-08-02"
+output: pdf_document
+---
+
+trap_temps.R and biosim_compare.R are used to create the data frames "tempdata" and "pheno", respectively. These data frames contain the weather data for each trap and the estimated starts, ends and peaks of the male moths' flight season according to BioSIM.
+
+```{r setup, include = FALSE}
+library(readxl)
+library(reshape2)
+library(tmbstan)
+library(TMB)
+library(tidyverse)
+library(lme4)
+library(boot)
+library(chillR)
+library(lubridate)
+library(ggpubr)
+library(ggmosaic)
+library(raster)
+library(terra)
+provinces <- getData(country="Canada", level=1)
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73",
+               "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+```
+## Capture Model
+# Capture Data Setup
+```{r trap data, warning = FALSE}
+### Read in data sheets 
+years <- 2018:2023
+sheet_names <- c('Afternoon', 'Evening', 'Night', 'Morning')
+trap.lst <- lapply(years, function(year) {
+  time.lst <- lapply(sheet_names, function(snm) {
+    dat <- read_excel(paste0('../data/traps', year, '.xlsx'), sheet = snm)
+    dat.raw <- dat[1:(nrow(dat)-2),1:(ncol(dat)-2)]
+    return(dat.raw)
+  })
+  names(time.lst) <- sheet_names
+  return(time.lst)
+})
+names(trap.lst) <- as.character(years)
+
+### Isolate Location codes with coordinates
+loc.ids <- c('Location', 'Code', 'Longitude', 'Latitude')
+all.locs <- bind_rows(lapply(1:length(trap.lst), function(i) {
+  x <- trap.lst[[i]]
+  dat <- x[[1]][,loc.ids]
+  dat$Year <- as.numeric(names(trap.lst)[i])
+  return(dat)
+}))
+all.locs$Index <- paste0(all.locs$Code, '_', all.locs$Year)
+al <- all.locs[,c('Location', 'Longitude', 'Latitude')]
+alu <- al[!duplicated(al),]
+alu$Location.orig <- alu$Location
+alu$Location <- unlist(lapply(unique(alu$Location.orig), function(x) {
+  nms <- alu[alu$Location.orig == x,'Location']
+  if (length(nms) > 1) {nms <- paste0(nms, 1:length(nms))}
+  return(nms)
+}))
+
+### Assign numbers to differentiate duplicated location names
+alu.lst <- lapply(unique(alu$Location.orig), function(x) {
+  sub <- subset(alu, Location.orig == x)
+  nms <- sub$Location.orig
+  if (length(nms) > 1) {nms <- paste0(nms, 1:length(nms))}
+  sub$Location <- nms
+  return(sub)
+})
+alu.df <- bind_rows(alu.lst)
+
+### Recover provinces of corresponding trap locations
+provs <- c('NB', 'NF', 'NS', 'QC')
+provinces.sub <- provinces[provinces$HASC_1 %in% paste0('CA.', provs),]
+all.pts <- vect(cbind(alu.df$Longitude, alu.df$Latitude), crs = '+proj=longlat')
+alu.df$Province <- NA
+for (p in provs) {
+  region <- provinces.sub[provinces.sub$HASC_1 == paste0('CA.', p),]
+  sv.region <- vect(region)
+  ext <- terra::extract(sv.region, all.pts)
+  w <- which(!is.na(ext$HASC_1))
+  alu.df$Province[w] <- p
+}
+alu.df <- na.omit(alu.df)
+
+al2 <- all.locs
+names(al2)[1] <- 'Location.orig'
+
+### Merge trap information 
+all.locs.rn <- merge(alu.df, al2)
+all.locs.rn$locIndex <- paste0(all.locs.rn$Location, '_', all.locs.rn$Year)
+all.locs.rn$region <- mapply(function(lat, lon) {
+  ifelse(lon < -62 & lat > 46, 'west', 'east')
+}, all.locs.rn$Latitude, all.locs.rn$Longitude)
+
+
+### Clean and aggregate capture data 
+capture.lst <- lapply(as.character(years), function(yr) {
+  period.lst <- lapply(sheet_names, function(snm) {
+    trap <- trap.lst[[yr]][[snm]]
+    trap$Code <- sapply(trap$Location, function(loc) {
+      all.locs$Code[all.locs$Location == loc & all.locs$Year == yr]})
+    capture.inds <- which(!(names(trap) %in% loc.ids)) 
+    capture.dates <- names(trap)[capture.inds]
+    # dates <- sapply(capture.dates, function(nm) {
+    #   #dt <- substring(nm, 2, nchar(nm))
+    #   dt.char <- paste0(strsplit(dt, split = '[.]')[[1]], collapse = '-')
+    #   return(dt.char)
+    # })
+    # names(trap)[capture.inds] <- dates
+    names(trap)[capture.inds] <- capture.dates
+    caps <- subset(trap, select = -c(Location, Longitude, Latitude))
+    m.caps <- melt(caps, id.vars = 'Code', value.name = 'Captures',
+                   variable.name = 'Date')
+    m.caps$Period <- snm
+    return(m.caps)
+  })
+  period.df <- bind_rows(period.lst)
+  period.df$Year <- as.numeric(yr)
+  period.df$Juldate <- julian(as.Date(period.df$Date), 
+                              origin = as.Date(paste0(yr, '-03-01')))
+  return(period.df)
+})
+cap.df <- bind_rows(capture.lst)
+
+### Identify missing data ###
+cap.df$Captures <- sapply(cap.df$Captures, function(x) {
+  ifelse(x < 0, NA, x)
+})
+
+### Create indices for site-years 
+cap.df$Index <- paste0(cap.df$Code, '_', cap.df$Year)
+
+### Create variable that is easier for glm() to handle 
+cap.df$corJuldate <- cap.df$Juldate - min(cap.df$Juldate)
+
+cap.df.orig <- cap.df
+```
+
+# Weather data setup & merge
+
+```{r temp data}
+### Read weather data around traps
+tempdata <- read.csv('../data/TrapWeather_clean.csv')
+
+### ID periods by hour 
+tempdata$Period <- sapply(tempdata$Date, function(x) {
+  hr <- hour(x)
+  ifelse(hr < 6, 'Night',
+         ifelse(hr < 12, 'Morning', 
+                ifelse(hr < 18, 'Afternoon', 'Evening')))
+})
+
+### Make correction for trap dates starting at noon 
+p.ind.vec <- sapply(tempdata$Period, function(x) {
+  ifelse(x %in% c('Night', 'Morning'), 1, 0)
+})
+tempdata$trapdate <- as.Date(tempdata$Date) - days(p.ind.vec)
+
+### Aggregate hourly data into period-based blocks 
+td.ag.orig <- aggregate(data = tempdata, temp ~ Period + trapdate + Code, 
+                        function(x) {c('min' = min(x, na.rm = TRUE), 
+                                       'mean' = mean(x), 'max' = max(x),
+                                       'bt.hrs' = length(which(x <= 14)))})
+nms <- paste0('temp.', colnames(td.ag.orig$temp))
+tmp.df <- as.data.frame(td.ag.orig$temp)
+names(tmp.df) <- nms
+td.ag <- bind_cols(td.ag.orig[,1:3], tmp.df)
+
+## Define Julian date as # of days after March 1
+td.ag$Year <- year(td.ag$trapdate)
+td.ag$Juldate <- sapply(1:nrow(td.ag), function(r) {
+  row <- td.ag[r,]
+  jd <- julian.Date(row$trapdate, origin = as.Date(paste0(row$Year, '-03-01')))
+})
+jd.range <- range(cap.df$Juldate)
+td.ag <- subset(td.ag, between(Juldate, jd.range[1], jd.range[2]))
+td.ag$Index <- paste0(td.ag$Code, '_', td.ag$Year)
+
+### Merge trap capture data with trap temp data 
+all.dat <- merge(cap.df, td.ag)
+all.dat$Period <- factor(all.dat$Period,
+                        levels = c('Afternoon', 'Evening', 'Night', 'Morning'))
+#all.dat.nao <- subset(all.dat, !is.na(Captures))
+glm.df <- merge(all.dat, all.locs.rn)
+```
+
+# Model Setup
+
+```{r fit model, cache = TRUE, warning = FALSE}
+### Create columns for model input
+## lowtemp: 1 if min temp in the period was below 14C
+## corJulDate: Julian date, corrected by period
+glm.df$locIndex <- factor(glm.df$locIndex)
+glm.df$lowtemp <- sapply(glm.df$temp.min, function(x) {ifelse(x <= 14, 1, 0)})
+glm.df$Period <- factor(glm.df$Period, levels = c('Afternoon', 'Evening', 
+                                                  'Night', 'Morning'))
+glm.df$corJuldate <- glm.df$corJuldate + 0.25*as.numeric(glm.df$Period)
+
+### Remove site-years with fewer than 3 days of observed captures > 0
+glm.df <- subset(glm.df, !(locIndex %in% c('Roy Island_2022',
+                                           'Tatamagouche2_2022')))
+glm.lst <- lapply(unique(glm.df$locIndex), function(ind) {
+  sub <- subset(glm.df, locIndex == ind)
+  if (all(is.na(sub$Captures))) {return(NULL)}
+  else {return(sub)}
+})
+glm.df <- bind_rows(glm.lst)
+write.csv(glm.df.orig, '../data/all_obs_full.csv', row.names = FALSE)
+
+### Leave 2019 Newfoundland observations out of main model fit,
+##   but still calculate outliers from these datasets
+glm.df.orig <- glm.df
+glm.df <- subset(glm.df, Year != 2019 | Province != 'NF')
+
+
+### Run glm
+full.mod <- glm(Captures ~ 
+                  corJuldate*locIndex +
+                  I(corJuldate^2)*locIndex + Period + 
+                  temp.mean + I(temp.mean^2) + temp.bt.hrs, 
+                #data = subset(glm.df, Year != 2019 | Province != 'NF'), 
+                data = glm.df,
+                family = poisson)
+saveRDS(full.mod, '../code/output/glm_obj.rds')
+```
+
+## Outlier Detection
+# Likelihood calculations
+```{r outlier detection, warning = FALSE, message = FALSE}
+### Extract temperature and period effect sizes
+cf.fm <- coef(full.mod)
+n.cf.fm <- names(cf.fm)
+per <- cf.fm[grep('Period', names(cf.fm))]
+names(per) <- c('Night', 'Morning', 'Afternoon')
+per <- c('Evening' = 0, per)
+#glm.df$temp.min.value <- glm.df$temp.min*cf.fm['temp.min']
+glm.df$temp.mean.value <- glm.df$temp.mean*cf.fm['temp.mean']
+glm.df$temp.mean2.value <- (glm.df$temp.mean^2)*cf.fm['I(temp.mean^2)']
+glm.df$temp.bt.hrs.value <- glm.df$lowtemp*cf.fm['temp.bt.hrs']
+glm.df$Period.value <- per[glm.df$Period]
+
+### Obtain model predictions of expected captures
+glm.df$pred <- exp(predict(full.mod, glm.df))
+glm.df$sq.r <- (glm.df$Captures - glm.df$pred)^2
+
+### Calculate likelihood of # of captures given expected
+glm.df$ll.overall <- dpois(glm.df$Captures, glm.df$pred, log = TRUE)
+
+### Fit model to dataset exclusive of each location-year and calculate 
+##   likelihood of each observed interval in that location-year 
+##   based on that model
+times <- c('Evening', 'Night', 'Morning', 'Afternoon')
+outlr.lst <- lapply(unique(glm.df$locIndex), function(ind) {
+  sub1 <- subset(glm.df, locIndex == ind)
+  mod.full <- glm(Captures ~ corJuldate + I(corJuldate^2) +
+                  # offset(temp.min.value) +
+                   offset(temp.mean.value) + offset(temp.mean2.value) +
+                   offset(temp.bt.hrs.value) +
+                   offset(Period.value), data = sub1, family = poisson)
+  cf.mf <- coef(mod.full)
+  jd.lst <- lapply(unique(sub1$corJuldate), function(jd) {
+    sub2 <- subset(sub1, corJuldate == jd)
+    if (all(is.na(sub2$Captures))) {
+      sub2$pred.loo <- NA
+      sub2$ll.loo <- NA
+    }
+    else {
+      sub2.not <- subset(sub1, corJuldate != jd)
+      mod1 <- glm(Captures ~ corJuldate + I(corJuldate^2) + 
+                   offset(temp.mean.value) + offset(temp.mean2.value) +
+                   offset(temp.bt.hrs.value) + offset(Period.value), 
+                  data = sub2.not, family = poisson)
+      pred1 <- exp(predict(mod1, sub2))
+      mod2 <- glm(Captures ~ corJuldate + I(corJuldate^2) +
+                   offset(Period.value), data = sub2.not, family = poisson)
+      pred2 <- exp(predict(mod2, sub2))
+      sub2$pred.loo <- pred1
+      sub2$pred.loo.notemp <- pred2
+      sub2$ll.loo <- dpois(sub2$Captures, lambda = pred1, log = TRUE)
+      sub2$ll.loo.notemp <- dpois(sub2$Captures, lambda = pred2, log = TRUE)
+    }
+    return(sub2)
+  })
+  jd.df <- bind_rows(jd.lst)
+  jd.df$coef.int <- cf.mf[1]
+  jd.df$coef.jd <- cf.mf[2]
+  jd.df$coef.jd2 <- cf.mf[3]
+  return(jd.df)
+})
+outlr.df <- bind_rows(outlr.lst)
+
+### Calculate 1st percentile of leave-one-out likelihood values
+outlr.q <- quantile(unlist(subset(outlr.df, is.finite(ll.loo) & !is.na(ll.loo),
+                           select = ll.loo)),
+                    prob = 0.01)
+outlr2.q <- quantile(unlist(subset(outlr.df, is.finite(ll.overall) & !is.na(ll.overall),
+                           select = ll.overall)),
+                    prob = 0.01)
+
+### Plot density of leave-one-out likelihood values
+ggplot(data = outlr.df) +
+    geom_density(aes(x = -ll.loo)) +
+    scale_x_continuous(trans = 'sqrt') +
+    theme_minimal() +
+    labs(x = 'Negative LL', y = 'Density') +
+    geom_vline(xintercept = -outlr.q, linetype = 2)
+
+
+### Create CDF of leave-one-out log likelihoods
+out.dens <- density(-outlr.df$ll.loo, na.rm = TRUE)
+out.dens.df <- as.data.frame(out.dens[c('x', 'y')])
+out.dens.df$cy <- out.dens.df$y/sum(out.dens.df$y)
+
+ggplot(data = out.dens.df) +
+  geom_line(aes(x = x, y = cy)) +
+  scale_x_continuous(trans = 'sqrt') +
+  theme_minimal() +
+  labs(x = 'Negative LL', y = 'Cumulative Density') +
+  geom_vline(xintercept = -outlr.q, linetype = 2)
+
+# outlr.df$out.ind <- sapply(outlr.df$ll.loo, 
+#                            function(x) {ifelse(x < outlr.q, 'outlier', 'normal')})
+
+### Label observations as "outlier" or "normal" and plot captures
+outlr.df$out.ind <- sapply(1:nrow(outlr.df), function(r) {
+  ifelse(outlr.df$ll.loo[r] < outlr.q & 
+           outlr.df$pred[r] < outlr.df$Captures[r], 
+         'outlier', 'normal')
+})
+outlr.df$out.ind <- factor(outlr.df$out.ind, levels = c('outlier', 'normal'))
+ggplot(data = subset(outlr.df, !is.na(Captures))) +
+  geom_bar(aes(x = days(floor(corJuldate)) + as.Date('2018-06-15'), 
+               y = Captures, fill = out.ind), stat = 'identity') +
+  scale_fill_manual(values = c('red', 'black')) +
+  theme_minimal() +
+  facet_wrap(vars(Year), ncol = 1) +
+  labs(x = 'Date', fill = 'Classification')
+
+### Aggregate captures by location and year
+ag.odf <- aggregate(data = outlr.df, 
+                    Captures ~ Location + Latitude + Longitude + Year,
+                    sum, na.rm = TRUE)
+ag.odf <- ag.odf[order(ag.odf$Location),]
+cap.table.orig <- dcast(ag.odf, Location + Latitude + Longitude ~ Year)
+
+#write.csv(cap.table.orig, 'data/capture_table_original.csv', row.names = FALSE)
+
+### Re-fit model without outlying observations
+newcaps <- subset(outlr.df, out.ind == 'normal' | pred > Captures)
+newcaps <- subset(newcaps, locIndex != 'Zinc Mine Rd1_2021')
+
+full.mod.new <- glm(Captures ~ locIndex*corJuldate +
+                      locIndex*I(corJuldate^2) +
+                      temp.mean + I(temp.mean^2) + 
+                      Period + temp.bt.hrs, 
+                    data = newcaps, family = poisson)
+newcaps$pred.new <- exp(predict(full.mod.new, newcaps))
+count.caps <- aggregate(data = newcaps, Captures ~ locIndex, sum)
+badlocs <- subset(count.caps, Captures == 0)$locIndex
+newcaps <- subset(newcaps, !(locIndex %in% badlocs))
+newcaps.orig <- newcaps
+
+ag.nc <- aggregate(data = newcaps, 
+                    Captures ~ Location + Latitude + Longitude + Year,
+                    sum, na.rm = TRUE)
+#ag.odf <- ag.odf[order(ag.nc$Location),]
+cap.table <- dcast(ag.nc, Location + Latitude + Longitude ~ Year)
+
+#write.csv(cap.table, '../data/capture_table.csv', row.names = FALSE)
+write.csv(outlr.df, '../data/all_obs.csv', row.names = FALSE)
+
+```
+
+## Description of Immigration Events and Local Flight
+# Local Flight Season
+```{r remove outliers}
+## First calculate flight periods without outliers
+durs.lst <- lapply(unique(newcaps$locIndex), function(x) {
+  sub <- subset(newcaps, locIndex == x)
+  # sub.ag <- aggregate(data = sub, Captures ~ trapdate, sum)
+  # early <- min(which(sub.ag$Captures > 0)) - 1
+  # late <- max(which(sub.ag$Captures > 0)) - 1
+  # cs.caps <- cumsum(sub.ag$Captures)
+  # n.cs.caps <- cs.caps/sum(sub.ag$Captures)
+  # peak <- min(which(n.cs.caps > 0.5)) - 1
+  # mid <- round(mean(c(early, late)))
+  # dur <- late - early
+  p.ag <- aggregate(data = sub, pred.new ~ trapdate + corJuldate, sum)
+  day.pred <- p.ag$pred.new/sum(p.ag$pred.new)
+  cs.day.pred <- cumsum(day.pred)
+  start <- p.ag$corJuldate[max(which(cs.day.pred < 0.05))]
+  end <- p.ag$corJuldate[min(which(cs.day.pred > 0.95))]
+  peak <- p.ag$corJuldate[which.min(abs(cs.day.pred - 0.5))]
+  early <- p.ag$corJuldate[max(which(cs.day.pred < 0.25))]
+  late <- p.ag$corJuldate[min(which(cs.day.pred > 0.75))]
+  dur <- end - start
+  mid <- mean(c(start, end))
+  
+  return(data.frame('locIndex' = x, 'Year' = unique(sub$Year), 
+                    'Province' = unique(sub$Province),
+                    'start' = start, 'midpoint' = mid, 'peak' = peak, 
+                    'end' = end, 'duration' = dur, 
+                    'early' = early, 'late' = late))
+})
+durs <- bind_rows(durs.lst)
+durs$Year <- factor(durs$Year, levels = as.character(2018:2022))
+durs$Province <- factor(durs$Province, levels = c('NB', 'QC', 'NS', 'NF'))
+
+newcaps <- merge(newcaps.orig, durs)
+newcaps$Year <- factor(newcaps$Year)
+#newcaps <- subset(newcaps, Year != '2019')
+
+### Aggregate captures by date, year, lon, and lat
+ag.caps <- aggregate(data = newcaps,
+                     Captures ~ corJuldate + Year + Latitude + Longitude + 
+                       Province + Location, sum)
+
+# ag.caps <- ag.caps[order(ag.caps$Latitude),]
+# ag.caps$region <- factor(ag.caps$region, levels = c('west', 'east'))
+# ag.caps <- ag.caps[order(ag.caps$region),]
+
+
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73",
+               "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+red <- '#D55E00'
+green <- '#009E73'
+purple <- '#CC79A7'
+blue <- '#56B4E9'
+
+prov.cols <- c(red, green, purple, blue)
+
+# dampen.cp <- function(n, col) {
+#   pal <- colorRampPalette(c('white', col))
+#   val <- pal(n)[2]
+#   new <- colorRampPalette(c(val, col))
+#   return(new)
+# }
+# redpal <- dampen.cp(8, red)
+# bluepal <- dampen.cp(8, blue)
+# 
+# rls <- subset(ag.caps, select = c(region, Location))
+# rls.nd <- rls[!duplicated(rls),]
+# rls.tab <- table(rls.nd$region)
+# fac.cols <- c(redpal(rls.tab[1]), bluepal(rls.tab[2]))
+# midcol.vals <- c(redpal(10)[6], bluepal(10)[6])
+
+#ag.caps <- merge(ag.caps, rls.nd)
+#ag.caps$Location <- factor(ag.caps$Location, levels = rls.nd$Location)
+
+### Plot # of captures by province for each year (no outliers)
+ag.caps$Province <- factor(ag.caps$Province, levels = c('NB', 'QC', 'NS', 'NF'))
+
+ggplot(data = ag.caps) +
+  geom_bar(aes(x = as.Date('2018-06-16') + days(floor(corJuldate)), 
+               y = Captures, fill = Province),
+           stat = 'identity',
+           show.legend = FALSE) +
+  facet_wrap(vars(Year), ncol = 1) +
+  scale_fill_manual(values = prov.cols) +
+  labs(x = 'Date') +
+  theme_minimal()
+
+### Aggregate Captures by location
+ag2.caps <- aggregate(data = ag.caps, Captures ~ Longitude + Latitude +
+                        Province + Location, sum)
+
+ag2.caps$lon.rd <- round(ag2.caps$Longitude)
+ag2.caps$lat.rd <- round(ag2.caps$Latitude)
+
+ag2.caps$ll<- factor(paste0(ag2.caps$lon.rd, '_', ag2.caps$lat.rd))
+
+ag.locs <- aggregate(data = ag2.caps, cbind(Latitude, Longitude) ~ ll, mean)
+ag.count <- aggregate(data = ag2.caps, Captures ~ ll + Province + Location, sum)
+
+mg.ag <- merge(ag.locs, ag.count)
+
+
+### Plot total captures by location
+ag2.caps$Province <- factor(ag2.caps$Province, levels = c('NB', 'QC', 'NS', 'NF'))
+ggplot(data = ag2.caps) +
+  geom_point(aes(x = Longitude, y = Latitude, 
+                 col = Province, size = Captures)) +
+  scale_color_manual(values = prov.cols, guide = 'none') +
+  scale_size(range = c(3, 10)) +
+  theme_minimal()
+```
+
+```{r outlier analysis}
+## Now get information about outliers
+outliers <- subset(outlr.df, out.ind == 'outlier')
+fl.season.full <- subset(newcaps, select = c(locIndex, duration, midpoint, start,
+                                             end, early, late))
+fl.season <- fl.season.full[!duplicated(fl.season.full),]
+
+mg.outliers <- merge(outliers, fl.season)
+
+mg.outliers$inperiod <- mapply(function(start, end, early, late, obs) {
+  ifelse(obs < start, 'before',
+         ifelse(obs < early, 'early', 
+                ifelse(obs > end, 'after',
+                       ifelse(obs > late, 'late', 'mid'))))
+  }, mg.outliers$start, mg.outliers$end,
+ mg.outliers$early, mg.outliers$late, mg.outliers$corJuldate)
+
+mg.outliers$dirpred <- mapply(function(obs, pred) {
+  ifelse(obs < pred, 'less', 'more')
+}, mg.outliers$Captures, mg.outliers$pred.loo)
+
+events <- subset(mg.outliers, dirpred == 'more')
+nsites <- sapply(as.character(2018:2022), function(yr) {
+  sub <- subset(outlr.df, Year == yr)
+  length(unique(sub$locIndex))
+})
+nevents <- sapply(as.character(2018:2022), function(yr) {
+  sub <- subset(events, Year == yr)
+  length(unique(sub$locIndex))
+})
+yr.event.prop <- nevents/nsites
+
+ndates <- nrow(aggregate(data = na.omit(outlr.df), Captures ~ locIndex + corJuldate, sum))
+date.event.prop <- nrow(events)/ndates
+yr.event <- table(events$Year)
+per.event <- table(events$Period)
+
+events$Province <- factor(events$Province, levels = c('NS', 'QC', 'NB', 'NF'))
+
+ggplot(data = events) +
+  geom_boxplot(aes(x = factor(Year),
+                   y = as.Date('2018-06-15') + days(floor(corJuldate)),
+                   fill = Province), varwidth = TRUE) +
+  labs(x = 'Year', y = 'Date of Suspected Immigration Event') +
+  scale_fill_manual(values = prov.cols) +
+  theme_minimal()
+
+ggplot(data = events) +
+  geom_boxplot(aes(x = factor(Year),
+                   y = Captures, fill = Province), varwidth = TRUE) +
+  labs(x = 'Year', y = '# of Captures') +
+  scale_fill_manual(values = prov.cols) +
+  theme_minimal()
+
+events$inperiod <- factor(events$inperiod, levels = c('before', 'early', 'mid',
+                                                      'late', 'after'))
+events$Period <- factor(events$Period, levels = c('Afternoon', 'Evening', 'Night', 'Morning'))
+
+ggplot(data = events) +
+  geom_mosaic(aes(x = product(inperiod), fill = Period, weight = Captures)) +
+  scale_fill_manual(values = cbPalette[c(5, 2, 6, 3)]) +
+  theme_minimal() +
+  labs(x = '') +
+  theme(legend.position = 'none')
+
+largecaps <- subset(events, Period == 'Evening' & !(inperiod %in% c('before', 'after')))
+
+ag.events.loc <- aggregate(data = events, Captures ~ locIndex + Latitude +
+                         Longitude + Year + Province, sum)
+ggplot(data = ag.events.loc) +
+  geom_point(aes(x = Longitude, y = Latitude,
+                 col = Province, size = Captures)) +
+  facet_wrap(vars(Year)) +
+  theme_minimal() +
+  scale_color_manual(values = prov.cols)
+
+events2 <- events
+events2$count <- 1
+ag.events.dat <- aggregate(data = events2,
+                           count ~ Year + corJuldate + Province, sum)
+ag.events.dat2 <- aggregate(data = events2,
+                           Captures ~ Year + corJuldate + Province +
+                             Latitude + Longitude, sum)
+ag.events.dat$Province <- factor(ag.events.dat$Province, levels = c('NB', 'QC', 'NS', 'NF'))
+event.bars <- ggplot(data = ag.events.dat) +
+  geom_bar(aes(x = days(floor(corJuldate)) + as.Date('2018-06-15'), y = count, 
+               fill = Province), stat = 'identity') +
+  facet_wrap(vars(Year), ncol = 1) +
+  scale_fill_manual(values = prov.cols) +
+  labs(y = 'Date', x = '# of Suspected Immigration Events', fill = 'Province') +
+  theme_minimal()
+
+ag.events.dat2$Province <- factor(ag.events.dat2$Province, levels = c('NB', 'QC', 'NS', 'NF'))
+event.maps <- ggplot(data = ag.events.dat2) +
+  geom_point(aes(x = Longitude, y = Latitude, size = Captures, col = Province)) +
+  facet_wrap(vars(Year), ncol = 1) +
+  scale_color_manual(values = prov.cols) +
+  theme_minimal()
+
+
+
+write.csv(events, '../data/imm_events.csv', row.names = FALSE)
+
+```
+
+# Description of Local Flight Period
+## Duration and Peak
+
+```{r duration, warning = FALSE}
+durs$date <- as.Date('2018-06-15') + days(round(durs$midpoint))
+
+### Plot distributions of durations across years
+durplot <- ggplot(data = durs) +
+    geom_boxplot(aes(x = Year, y = duration, fill = Province), 
+                 varwidth = TRUE) +
+    scale_fill_manual(values = prov.cols) +
+    theme_minimal() +
+    theme(legend.position = 'none') +
+    labs(x = 'Year', title = 'Duration (Days)', y = '') +
+    scale_x_discrete(drop = FALSE)
+
+mpplot <- ggplot(data = durs) +
+    geom_boxplot(aes(x = Year, y = date, fill = Province),
+                 varwidth = TRUE) +
+    scale_fill_manual(values = prov.cols) +
+    ylim(c(as.Date('2018-06-15'), as.Date('2018-08-22'))) +
+    theme_minimal() +
+    labs(x = 'Year', title = 'Midpoint', y = '') +
+    scale_x_discrete(drop = FALSE)
+
+ggarrange(durplot, mpplot, widths = c(0.45, 0.55))
+
+```
+
+Most outliers we're identifying are during the flight period
+
+## Diel Patterns
+
+```{r diel patterns}
+nc.nao <- subset(newcaps, !is.na(Captures))
+diel.ag <- aggregate(data = nc.nao, Captures ~ Period + Year, 
+                     function(x) {sum(x)/sum(nc.nao$Captures)})
+diel.ag$Period <- factor(diel.ag$Period, 
+                         levels = c('Afternoon', 'Evening', 'Night', 'Morning'))
+diel.ag$Year <- as.character(diel.ag$Year)
+diel.ag <- rbind(NA, diel.ag)
+diel.ag$Year[1] <- '2019'
+
+diel.ag$Year <- factor(diel.ag$Year, levels = as.character(2018:2022))
+diel.ag <- diel.ag[-1,]
+
+ggplot(data = diel.ag, aes(x = Year, y = Captures)) +
+  geom_bar(aes(fill = Period), stat = 'identity') +
+  labs(y = 'Proportion of Total Captures') +
+  scale_fill_manual(values = cbPalette[c(5, 2, 6, 3)]) +
+  scale_x_discrete(drop = FALSE) +
+  theme_minimal()
+```
+
+
+```{r investigation of relative abundance}
+rab.df <- aggregate(data = newcaps, Captures ~ Year + Location + Location.orig +
+                      Province + Latitude + Longitude, sum)
+rab.ag.yr <- aggregate(data = rab.df, Captures ~ Year, mean)
+rab.ag.loc <- aggregate(data = rab.df, Captures ~ Location + Province,
+                        function(x) {c(mean(x), 
+                                       min(x), 
+                                       max(x))})
+
+rab.ag.df <- data.frame('Location' = rab.ag.loc[,'Location'])
+caps <- as.data.frame(rab.ag.loc$Captures)
+names(caps) <- c('meanCaps', 'minCaps', 'maxCaps')
+rab.ag.df <- cbind(rab.ag.df, caps)
+mg <- merge(rab.ag.df, newcaps[,c('Location', 'Longitude', 'Latitude', 'Province')])
+rab.ag.df.mg <- mg[!duplicated(mg),]
+rab.ag.df.mg$Province <- factor(rab.ag.df.mg$Province, levels = c('NS', 'QC', 'NB', 'NF'))
+
+ggplot(data = rab.ag.df.mg) +
+  geom_point(aes(x = Longitude, y = Latitude, size = minCaps, col = Province), alpha = 0.3) +
+  geom_point(aes(x = Longitude, y = Latitude, size = minCaps, col = Province), alpha = 0.3) +
+  scale_size(range = c(1, 8)) +
+  scale_colour_manual(values = prov.cols) +
+  theme_minimal()
+
+
+```
+
+
+```{r suspected immigration events with intersections}
+imm.traj.orig <- read.csv('../data/all_imm_event_trajinfo.csv')
+imm.p.traj <- read.csv('../data/imm_pts_proptraj.csv')
+imm.traj <- merge(imm.traj.orig, imm.p.traj)
+
+imm.traj <- subset(imm.traj, intersection)
+
+
+
+
+```
