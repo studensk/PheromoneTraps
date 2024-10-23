@@ -405,7 +405,7 @@ durs.lst <- lapply(unique(newcaps$locIndex), function(x) {
                     'early' = early, 'late' = late))
 })
 durs <- bind_rows(durs.lst)
-durs$Year <- factor(durs$Year, levels = as.character(2018:2022))
+durs$Year <- factor(durs$Year, levels = as.character(2018:2023))
 durs$Province <- factor(durs$Province, levels = c('NB', 'QC', 'NS', 'NF'))
 
 newcaps <- merge(newcaps.orig, durs)
