@@ -1,15 +1,20 @@
 library(tidyverse)
-library(splitr)
 library(parallel)
 library(lutz)
+# devtools::install_github('studensk/sbwtraj')
+library(sbwtraj)
+library(sf)
 ## 96 cores
 
 imm.events <- read.csv('data/imm_events.csv')
 o.points <- read.csv('data/origins_yearly.csv')
+# o.points.orig <- read.csv('data/origins_yearly.csv')
+# u.points <- o.points.orig %>%
+#   select(Longitude, Latitude) %>%
+#   distinct() %>%
+#   mutate(start.index = 1:nrow(.))
+# o.points <- merge(o.points.orig, u.points)
 
-source('code/util_file.R')
-source('code/trajectory_read.R')
-source('code/hysplit_trajectory_new2.R')
 
 tzs <- tz_lookup_coords(lat = imm.events$Latitude, lon = imm.events$Longitude, 
                         method = 'accurate')
@@ -34,124 +39,110 @@ dt.per <- sapply(1:length(dt.lst), function(i) {
   as.character(with_tz(new, 'GMT'))
 })
 
-dt.per.full <- as.POSIXct(dt.per, tz =)
+dt.per.full <- as.POSIXct(dt.per)
 imm.events$trajdate <- as.Date(dt.per)
 imm.events$start.hr.gmt <- hour(dt.per.full)
-imm.events.orig <- imm.events
 
-imm.dates <- unique(as.Date(imm.events.orig$trajdate))
+imm.events.sf <- st_as_sf(imm.events,
+                          coords = c('Longitude', 'Latitude'),
+                          crs = "+proj=longlat +datum=WGS84")
+imm.events.buf <- st_buffer(imm.events.sf, dist = 10000)
+o.points.sf <- st_as_sf(o.points,
+                          coords = c('Longitude', 'Latitude'),
+                          crs = "+proj=longlat +datum=WGS84")
 
-s.imm.dates <- sort(imm.dates)
-
-date.vl <- function(alldates, int = 0) {
-  date.lst <- lapply(alldates, function(x) {
-    return(x + days(-1:5))
-  })
-  combine.lst.initial <- list()
-  ind <- vector()
-  for (i in 1:length(date.lst)) {
-    ind.new <- c(ind, i)
-    dates <- as.Date(unlist(date.lst[ind.new]))
-    len <- length(unique(dates))
-    y.len <- length(unique(year(dates)))
-    if (len > 17 | y.len > 1 | diff(range(alldates[ind.new])) > 10) {
-      combine.lst.initial <- append(combine.lst.initial, list(ind + int))
-      ind <- i
-    }
-    else {ind <- ind.new}
-  }
-  combine.lst.orig <- append(combine.lst.initial, list(ind + int))
-  return(combine.lst.orig)
-}
-
-combine.lst <- date.vl(s.imm.dates)
-####
-
-cl.ind <- unlist(lapply(1:length(combine.lst), function(x) {
-  cl <- combine.lst[[x]]
-  rep(x, length(cl))
-}))
-
-index.key <- data.frame('date' = s.imm.dates, 'index' = cl.ind)
-index.key$Year <- year(index.key$date)
-# write.csv(index.key, 'data/index_key.csv', row.names = FALSE)
-
-## if download.file times out, run:
-##   options(timeout = max(300, getOption("timeout")))
-
-o.points <- o.points[order(o.points$Longitude),]
-o.points <- o.points[order(o.points$Latitude),]
-
-dirpath <- paste0(getwd(), '/meteorology')
-
-max.ind <- 0
-for (yr in 2018:2022) {
-  print(yr)
-  y.o.points <- subset(o.points, Year == yr)
-  ind.df <- subset(index.key, Year == yr)
-  ind.vec <- unique(ind.df$index)
-  combine.lst.sub <- combine.lst[ind.vec]
+rdf.lst <- lapply(1:nrow(imm.events.sf), function(r) {
+  row <- imm.events.sf[r,]
+  year <- unique(row$Year)
+  o.yr.sf <- subset(o.points.sf, Year == year)
+  o.yr <- subset(o.points, Year == year)
   
-  cl <- makeCluster(80)
-  clusterEvalQ(cl, {
-    library(tidyverse)
-    library(splitr)
+  dists <- as.numeric(st_distance(row, o.yr.sf)[1,])
+  w <- which(dists <= 1050*1000)
+  origins <- o.yr[w,]
+  
+  datetime <- as.Date(row$trapdate) + hours(c(-1, 1, 3))
+  fly.df <- expand.grid('datetime' = datetime, 'height' = c(300, 600, 900)) %>%
+    mutate(hour = hour(datetime),
+           date = date(datetime)) %>%
+    merge(origins) %>%
+    rename(lon = Longitude, lat = Latitude) %>%
+    select(-datetime, -Year) 
+  return(fly.df)
+})
 
-    source('code/hysplit_trajectory_new2.R')
-    source('code/trajectory_read.R')
-    source('code/util_file.R')
-  })
-  clusterExport(cl, c('y.o.points', 's.imm.dates', 'yr', 
-                      'dirpath', 'combine.lst.sub', 'max.ind'))
-  traj.lst <- parLapply(cl, 1:nrow(y.o.points), function(x) {
-    for(i in 1:length(combine.lst.sub)) {
-      inds <- combine.lst.sub[[i]]
-      dates <- s.imm.dates[inds]
-      e.path <- paste0(dirpath, '/ed', x, '_', yr)
-      dir.create(path = e.path)
-      cfg <- list(KMSL = 0,
-                  tm_tpot = 1,
-                  tm_tamb = 1,
-                  tm_rain = 1,
-                  tm_mixd = 1,
-                  tm_relh = 1,
-                  tm_terr = 1,
-                  tm_dswf = 1,
-                  vbug=2.5)
-      traj1 <- hysplit_trajectory_new2(lat = y.o.points$Latitude[x],
-                                      lon = y.o.points$Longitude[x],
-                                      duration = 9,
-                                      days = s.imm.dates[inds],
-                                      height = c(300, 600, 900),
-                                      daily_hours = c(1, 3),
-                                      met_type = 'nams',
-                                      extended_met = TRUE, 
-                                      met_dir = dirpath,
-                                      exec_dir = e.path,
-                                      clean_up = TRUE,
-                                      config = cfg)
-      
-      traj2 <- hysplit_trajectory_new2(lat = y.o.points$Latitude[x],
-                                      lon = y.o.points$Longitude[x],
-                                      duration = 9,
-                                      days = s.imm.dates[inds] - 1,
-                                      height = c(300, 600, 900),
-                                      daily_hours = 23,
-                                      met_type = 'nams',
-                                      extended_met = TRUE, 
-                                      met_dir = dirpath,
-                                      exec_dir = e.path,
-                                      clean_up = TRUE,
-                                      config = cfg)
-      traj1$run <- traj1$run + max(traj2$run)
-      traj <- rbind(traj2, traj1)
-      
-      write.csv(traj, paste0('code/output/hysplit_output/traj',
-                             i + max.ind, '_', x, '.csv'),
-                row.names = FALSE)
-      
-    }
-  })
-  stopCluster(cl)
-  max.ind <- max(ind.vec)
+rdf.full <- bind_rows(rdf.lst) %>%
+  distinct() %>%
+  arrange(date)
+
+# write.csv(rdf.full , 'data/full_rundf.csv', row.names = FALSE)
+
+u.dates <- unique(rdf.full$date)
+
+for (i in 1:length(u.dates)) {
+  print(i)
+  d <- u.dates[i]
+  rdf.sub <- subset(rdf.full, date == d)
+  e.dir <- file.path('code/output/hysplit_output')
+  traj.df <- hysplit_trajectory(rdf.sub, 
+                                met_dir = file.path(getwd(), 'meteorology'), 
+                                exec_dir = file.path(getwd(), e.dir),
+                                traj_name = paste0('date_', d))
 }
+
+out.path <- 'code/output/hysplit_output'
+t.files.orig <- list.files(out.path, pattern = 'date')
+file.date <- sapply(t.files.orig, function(x) {
+  substr(x, 6, nchar(x) - 4)
+}, USE.NAMES = FALSE)
+ord <- order(as.Date(file.date))
+t.files <- t.files.orig[ord]
+
+traj.lst <- lapply(1:length(t.files), function(i) {
+  file <- t.files[i]
+  path <- file.path(out.path, file)
+  traj <- read.csv(path) %>%
+    mutate(receptor = paste0(i, '_', receptor),
+           date_i = as.Date(traj_dt_i))
+})
+traj.df <- bind_rows(traj.lst)
+# traj.df.orig <- traj.df
+# traj.df <- traj.df.orig %>%
+#   mutate(lon_i = round(lon_i, 2), 
+#          lat_i = round(lat_i, 2))
+
+rdf.join.lst <- lapply(1:length(rdf.lst), function(ind) {
+  rdf <- rdf.lst[[ind]]
+  traj.sub <- subset(traj.df, date_i %in% unique(rdf$date))
+  
+  rdf.new <- rdf %>%
+    rename_with(~paste0(.x, '_i')) %>%
+    mutate(lon_i = round(lon_i, 3),
+           lat_i = round(lat_i, 3))
+  rdf.mg <- merge(rdf.new, traj.sub) %>%
+    arrange(hour_along)
+  rdf.i <- rdf.mg %>%
+    select(contains('_i'), receptor) %>%
+    distinct()
+  rdf.st <-
+    st_as_sf(x = rdf.mg, coords = c("lon", "lat"), crs = "epsg:4326") %>%
+    group_by(receptor) %>%
+    summarize(do_union = FALSE) %>%
+    filter(st_geometry_type(.) == "MULTIPOINT") %>%
+    st_cast("LINESTRING") %>%
+    merge(rdf.i)
+  
+  event <- imm.events.buf[ind,]
+  intersection <- st_intersects(event, rdf.st)
+  rdf.int <- rdf.st[intersection[[1]],]
+  rdf.int$imm.event <- ind
+  
+  file.name <- paste0('intersectons', ind, '.rds')
+  path <- file.path('code/output/hysplit_output/intersections', file.name)
+  saveRDS(rdf.int, file = path)
+  return(rdf.int)
+})
+
+rdf.join <- bind_rows(rdf.join.lst)
+saveRDS(rdf.join, 'code/output/intersecting_trajectories_sbwtraj.rds')
+

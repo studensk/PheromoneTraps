@@ -35,12 +35,12 @@ imm.events$start.hr.gmt <- hour(dt.per.full)
 imm.events.orig <- imm.events
 
 index.key <- read.csv('data/index_key.csv')
-names(index.key) <- c('date', 'dateIndex')
-index.key$trajdate <- as.Date(index.key$date) + 1
+names(index.key) <- c('trajdate', 'dateIndex', 'Year')
+#index.key$trajdate <- as.Date(index.key$date) + 1
 
 imm.events <- merge(imm.events.orig, index.key)
   
-o.points <- read.csv('data/origins.csv')
+o.points <- read.csv('data/origins_yearly.csv')
 o.points <- o.points[!duplicated(o.points),]
 
 ##### Create sf Objects #####
@@ -71,8 +71,11 @@ for (i in 1:max.ind) {
   traj.df$date_i <- as.Date(traj.df$traj_dt_i)
   traj.df$hour_i <- hour(traj.df$traj_dt_i)
   
+  traj.df <- subset(traj.df, !is.na(lon))
+  
   dayvec <- rep(0, nrow(traj.df)) 
   dayvec[traj.df$hour_i == 11] <- 1
+  
   
   # traj.df$trapdate_i <- as.Date(mapply(function(date, hour) {
   #   ifelse(hour == 11, date + 1, date)
@@ -97,7 +100,7 @@ for (i in 1:max.ind) {
   print(ptm.end)
 }
 
-cols <- c('lat', 'lon', 'index')
+cols <- c('lat', 'lon', 'index', 'hour_along')
 at.lst <- lapply(1:max.ind, function(i) {
   path <- 'code/output/'
   file <- paste0('all_trajectories', i, '.csv')
@@ -105,7 +108,7 @@ at.lst <- lapply(1:max.ind, function(i) {
   data[,cols]
 })
 
-max.ind <- 10
+#max.ind <- 10
 
 cl <- makeCluster(max.ind)
 clusterEvalQ(cl, {

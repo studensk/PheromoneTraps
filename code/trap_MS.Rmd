@@ -12,7 +12,6 @@ library(readxl)
 library(reshape2)
 library(tmbstan)
 library(TMB)
-library(tidyverse)
 library(lme4)
 library(boot)
 library(chillR)
@@ -21,7 +20,11 @@ library(ggpubr)
 library(ggmosaic)
 library(raster)
 library(terra)
-provinces <- getData(country="Canada", level=1)
+library(sf)
+library(canadianmaps)
+library(tidyverse)
+#library(geodata)
+provinces <- PROV
 cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73",
                "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
 ```
@@ -29,7 +32,7 @@ cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73",
 # Capture Data Setup
 ```{r trap data, warning = FALSE}
 ### Read in data sheets 
-years <- 2018:2023
+years <- 2018:2024
 sheet_names <- c('Afternoon', 'Evening', 'Night', 'Morning')
 trap.lst <- lapply(years, function(year) {
   time.lst <- lapply(sheet_names, function(snm) {
@@ -71,21 +74,38 @@ alu.lst <- lapply(unique(alu$Location.orig), function(x) {
 alu.df <- bind_rows(alu.lst)
 
 ### Recover provinces of corresponding trap locations
-provs <- c('NB', 'NF', 'NS', 'QC')
-provinces.sub <- provinces[provinces$HASC_1 %in% paste0('CA.', provs),]
-all.pts <- vect(cbind(alu.df$Longitude, alu.df$Latitude), crs = '+proj=longlat')
-alu.df$Province <- NA
-for (p in provs) {
-  region <- provinces.sub[provinces.sub$HASC_1 == paste0('CA.', p),]
-  sv.region <- vect(region)
-  ext <- terra::extract(sv.region, all.pts)
-  w <- which(!is.na(ext$HASC_1))
-  alu.df$Province[w] <- p
-}
-alu.df <- na.omit(alu.df)
+provs <- c('NB', 'NL', 'NS', 'QC')
+#provinces.sub <- provinces[provinces$HASC_1 %in% paste0('CA.', provs),]
+provinces.sub <- subset(provinces, PT %in% provs)
+valid.tf <- st_is_valid(provinces.sub)
 
-al2 <- all.locs
-names(al2)[1] <- 'Location.orig'
+## QC st geometry is invalid, so need to remove for intersection step
+provs.valid <- provinces.sub$PT[valid.tf]
+ps.new <- subset(provinces.sub, PT %in% provs.valid)
+
+alu.df.st <- st_as_sf(alu.df, coords = c('Longitude', 'Latitude'), crs = 4326)
+## Need to add QC back to alu.df at the end here
+all.locs.rn <- st_intersection(alu.df.st, ps.new) %>%
+  as.data.frame() %>%
+  dplyr::select(Location, Location.orig, PT) %>%
+  rename(Province = PT) %>%
+  merge(alu.df, all.y = TRUE) %>%
+  mutate(Province = ifelse(is.na(Province), 'QC', Province))
+
+
+#all.pts <- vect(cbind(alu.df$Longitude, alu.df$Latitude), crs = '+proj=longlat')
+# alu.df$Province <- NA
+# for (p in provs) {
+#   region <- provinces.sub[provinces.sub$HASC_1 == paste0('CA.', p),]
+#   sv.region <- vect(region)
+#   ext <- terra::extract(sv.region, all.pts)
+#   w <- which(!is.na(ext$HASC_1))
+#   alu.df$Province[w] <- p
+# }
+# alu.df <- na.omit(alu.df)
+# 
+# al2 <- all.locs
+# names(al2)[1] <- 'Location.orig'
 
 ### Merge trap information 
 all.locs.rn <- merge(alu.df, al2)
