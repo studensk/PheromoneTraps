@@ -54,7 +54,7 @@ all.locs <- bind_rows(lapply(1:length(trap.lst), function(i) {
   return(dat)
 }))
 all.locs$Index <- paste0(all.locs$Code, '_', all.locs$Year)
-al <- all.locs[,c('Location', 'Longitude', 'Latitude')]
+al <- all.locs[,c('Location', 'Longitude', 'Latitude', 'Year')]
 alu <- al[!duplicated(al),]
 alu$Location.orig <- alu$Location
 alu$Location <- unlist(lapply(unique(alu$Location.orig), function(x) {
@@ -93,7 +93,7 @@ all.locs.rn <- st_intersection(alu.df.st, ps.new) %>%
   mutate(Province = ifelse(is.na(Province), 'QC', Province))
 
 
-#all.pts <- vect(cbind(alu.df$Longitude, alu.df$Latitude), crs = '+proj=longlat')
+# all.pts <- vect(cbind(alu.df$Longitude, alu.df$Latitude), crs = '+proj=longlat')
 # alu.df$Province <- NA
 # for (p in provs) {
 #   region <- provinces.sub[provinces.sub$HASC_1 == paste0('CA.', p),]
@@ -108,7 +108,7 @@ all.locs.rn <- st_intersection(alu.df.st, ps.new) %>%
 # names(al2)[1] <- 'Location.orig'
 
 ### Merge trap information 
-all.locs.rn <- merge(alu.df, al2)
+#all.locs.rn <- merge(alu.df, al2)
 all.locs.rn$locIndex <- paste0(all.locs.rn$Location, '_', all.locs.rn$Year)
 all.locs.rn$region <- mapply(function(lat, lon) {
   ifelse(lon < -62 & lat > 46, 'west', 'east')
@@ -226,13 +226,13 @@ glm.lst <- lapply(unique(glm.df$locIndex), function(ind) {
   if (all(is.na(sub$Captures))) {return(NULL)}
   else {return(sub)}
 })
-glm.df <- bind_rows(glm.lst)
+glm.df.orig <- bind_rows(glm.lst)
 write.csv(glm.df.orig, '../data/all_obs_full.csv', row.names = FALSE)
 
 ### Leave 2019 Newfoundland observations out of main model fit,
 ##   but still calculate outliers from these datasets
-glm.df.orig <- glm.df
-glm.df <- subset(glm.df, Year != 2019 | Province != 'NF')
+
+glm.df <- subset(glm.df.orig, Year != 2019 | Province != 'NF')
 
 
 ### Run glm
